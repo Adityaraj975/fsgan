@@ -285,6 +285,7 @@ class FaceSwapping(VideoProcessBase):
         for i, (src_frame, src_landmarks, src_poses, bw, tgt_frame, tgt_landmarks, tgt_pose, tgt_mask) \
                 in enumerate(tqdm(appearance_map_loader, unit='batches', file=sys.stdout)):
             # Prepare input
+            l_out = [src_frame, src_landmarks, src_poses, bw, tgt_frame, tgt_landmarks, tgt_pose, tgt_mask]
             for p in range(len(src_frame)):
                 src_frame[p] = src_frame[p].to(self.device)
             tgt_frame = tgt_frame.to(self.device)
@@ -306,33 +307,48 @@ class FaceSwapping(VideoProcessBase):
                 # Reenactment
                 reenactment_triplet.append(self.Gr(input).unsqueeze(1))
             reenactment_tensor = torch.cat(reenactment_triplet, dim=1)
+            l_out.append(reenactment_tensor)
 
             # Barycentric interpolation of reenacted frames
             reenactment_tensor = (reenactment_tensor * bw.view(*bw.shape, 1, 1, 1)).sum(dim=1)
+            l_out.append(reenactment_tensor)
 
             # Compute reenactment segmentation
             reenactment_seg = self.S(reenactment_tensor)
             reenactment_background_mask_tensor = (reenactment_seg.argmax(1) != 1).unsqueeze(1)
+            l_out.append(reenactment_seg)
+            l_out.append(reenactment_background_mask_tensor)
 
             # Remove the background of the aligned face
             reenactment_tensor.masked_fill_(reenactment_background_mask_tensor, -1.0)
+            l_out.append(reenactment_tensor)
 
             # Soften target mask
             soft_tgt_mask, eroded_tgt_mask = self.smooth_mask(tgt_mask)
+            l_out.append(soft_tgt_mask)
+            l_out.append(eroded_tgt_mask)
 
             # Complete face
             inpainting_input_tensor = torch.cat((reenactment_tensor, eroded_tgt_mask.float()), dim=1)
             inpainting_input_tensor_pyd = create_pyramid(inpainting_input_tensor, 2)
             completion_tensor = self.Gc(inpainting_input_tensor_pyd)
+            l_out.append(completion_tensor)
 
             # Blend faces
             transfer_tensor = transfer_mask(completion_tensor, tgt_frame, eroded_tgt_mask)
             blend_input_tensor = torch.cat((transfer_tensor, tgt_frame, eroded_tgt_mask.float()), dim=1)
             blend_input_tensor_pyd = create_pyramid(blend_input_tensor, 2)
             blend_tensor = self.Gb(blend_input_tensor_pyd)
+            l_out.append(blend_tensor)
 
             # Final result
             result_tensor = blend_tensor * soft_tgt_mask + tgt_frame * (1 - soft_tgt_mask)
+            l_out.append(result_tensor)
+            
+            # save
+            with open('data_analyse.pickle', 'wb') as handle:
+                pickle.dump(l_out, handle)
+
 
             # Write output
             if self.verbose == 0:
